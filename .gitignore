@@ -5,3 +5,7 @@ __pycache__
 *.pyc
 *.csv
 contacts_by_company.json
+
+# Node/TypeScript MCP server
+apollo-mcp/node_modules/
+apollo-mcp/dist/
