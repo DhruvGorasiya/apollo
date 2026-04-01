@@ -1,11 +1,17 @@
-export type ApolloSearchContact = {
+export type ApolloContactDetail = {
   id: string;
-  name?: string | null;
   first_name?: string | null;
   last_name?: string | null;
-  email?: string | null;
-  organization_name?: string | null;
   title?: string | null;
+  organization?: { name?: string | null } | null;
+  email?: string | null;
+  linkedin_url?: string | null;
+  city?: string | null;
+  state?: string | null;
+  country?: string | null;
+  seniority?: string | null;
+  departments?: string[] | null;
+  contact_campaign_statuses?: Array<{ id?: string | null; emailer_campaign_id?: string | null; emailer_campaign_name?: string | null }> | null;
 };
 
 export type TypedCustomField = {
@@ -26,7 +32,37 @@ type ApolloClientOptions = {
   apiBaseUrl?: string;
 };
 
+type EnrichPersonInput = {
+  first_name: string;
+  last_name: string;
+  organization_name: string;
+  domain?: string;
+  linkedin_url?: string;
+};
+
+type EnrichPersonResult = {
+  email: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  organization_name: string | null;
+  apollo_id: string | null;
+};
+
+type ApolloPerson = {
+  id?: string | null;
+  email?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  organization_name?: string | null;
+};
+
 const DEFAULT_APOLLO_API_BASE_URL = 'https://api.apollo.io/api/v1';
+
+// LinkedIn obfuscated profile IDs (ACw... format) can't be resolved by Apollo.
+// Passing them causes a match failure; omitting them lets Apollo fall back to name+domain.
+function isObfuscatedLinkedInUrl(url: string): boolean {
+  return /\/in\/ACw/i.test(url);
+}
 
 function normalizeKey(s: string): string {
   return s.trim().toLowerCase();
@@ -45,6 +81,16 @@ function extractJsonResponse<T>(json: unknown): T {
     }
   }
   return json as T;
+}
+
+function toEnrichResult(person: ApolloPerson | null | undefined): EnrichPersonResult {
+  return {
+    email: person?.email ?? null,
+    first_name: person?.first_name ?? null,
+    last_name: person?.last_name ?? null,
+    organization_name: person?.organization_name ?? null,
+    apollo_id: person?.id ?? null,
+  };
 }
 
 export class ApolloClient {
@@ -85,15 +131,6 @@ export class ApolloClient {
     // Apollo always returns JSON for our endpoints.
     const json = (await res.json()) as unknown;
     return extractJsonResponse<T>(json);
-  }
-
-  async searchContacts(qKeywords: string, page = 1, perPage = 5): Promise<ApolloSearchContact[]> {
-    const payload = { q_keywords: qKeywords, page, per_page: perPage };
-    const json = await this.request<{ contacts?: ApolloSearchContact[] }>('/contacts/search', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-    return json.contacts ?? [];
   }
 
   private async getTypedCustomFields(): Promise<TypedCustomField[]> {
@@ -153,6 +190,64 @@ export class ApolloClient {
     });
   }
 
+  async enrichPerson(input: EnrichPersonInput): Promise<EnrichPersonResult> {
+    const body: Record<string, unknown> = {
+      first_name: input.first_name,
+      last_name: input.last_name,
+      organization_name: input.organization_name,
+      reveal_personal_emails: false,
+      reveal_phone_number: false,
+    };
+    if (input.domain) body.domain = input.domain;
+    if (input.linkedin_url && !isObfuscatedLinkedInUrl(input.linkedin_url)) body.linkedin_url = input.linkedin_url;
+
+    try {
+      const json = await this.request<{ person?: ApolloPerson | null }>('/people/match', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      return toEnrichResult(json.person);
+    } catch {
+      return { email: null, first_name: null, last_name: null, organization_name: null, apollo_id: null };
+    }
+  }
+
+  async bulkEnrichPeople(people: EnrichPersonInput[]): Promise<EnrichPersonResult[]> {
+    const details = people.map((p) => {
+      const entry: Record<string, unknown> = {
+        first_name: p.first_name,
+        last_name: p.last_name,
+        organization_name: p.organization_name,
+      };
+      if (p.domain) entry.domain = p.domain;
+      if (p.linkedin_url && !isObfuscatedLinkedInUrl(p.linkedin_url)) entry.linkedin_url = p.linkedin_url;
+      return entry;
+    });
+
+    const json = await this.request<{ matches?: Array<{ person?: ApolloPerson | null }> }>('/people/bulk_match', {
+      method: 'POST',
+      body: JSON.stringify({
+        details,
+        reveal_personal_emails: false,
+        reveal_phone_number: false,
+      }),
+    });
+
+    const matches = json.matches ?? [];
+    // Return one result per input, padding with nulls if Apollo returns fewer.
+    return people.map((_, i) => toEnrichResult(matches[i]?.person));
+  }
+
+  async getContact(contactId: string): Promise<ApolloContactDetail> {
+    const json = await this.request<{ contact?: ApolloContactDetail }>(`/contacts/${encodeURIComponent(contactId)}`, {
+      method: 'GET',
+    });
+    if (!json.contact) {
+      throw new Error(`Apollo returned no contact for id: ${contactId}`);
+    }
+    return json.contact;
+  }
+
   async addContactsToSequence(args: {
     contactId: string;
     sequenceId: string;
@@ -170,4 +265,3 @@ export class ApolloClient {
     });
   }
 }
-

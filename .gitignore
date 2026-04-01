@@ -9,3 +9,5 @@ contacts_by_company.json
 # Node/TypeScript MCP server
 apollo-mcp/node_modules/
 apollo-mcp/dist/
+# Standalone repo (see https://github.com/DhruvGorasiya/apollo-mcp)
+apollo-mcp/.git/
